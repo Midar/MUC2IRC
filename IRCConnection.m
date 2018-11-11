@@ -11,14 +11,38 @@
 - (void)processLine: (OFString *)line;
 - (void)sendLine: (OFConstantString *)format, ...;
 - (void)sendStatus: (unsigned short)status
-	 arguments: (OFArray OF_GENERIC(OFString *) *)arguments
-	   message: (OFString *)message;
+	 arguments: (OFArray OF_GENERIC(OFString *) *)arguments;
 - (void)checkHelloComplete;
 - (void)sendPresenceForChannel: (OFString *)channel
 			  type: (OFString *)type;
 - (void)joinChannel: (OFString *)channel;
 - (void)leaveChannel: (OFString *)channel;
 @end
+
+static OFString *
+messageForStatus(unsigned short status)
+{
+	switch (status) {
+	case 366:
+		return @"End of /NAMES list";
+	case 401:
+		return @"No such nick/channel";
+	case 403:
+		return @"No such channel";
+	case 411:
+		return @"No recipient given";
+	case 412:
+		return @"No text to send";
+	case 421:
+		return @"Unknown command";
+	case 431:
+		return @"No nickname given";
+	case 461:
+		return @"Not enough parameters";
+	default:
+		return nil;
+	}
+}
 
 @implementation IRCConnection
 @synthesize nickname = _nickname, username = _username, realname = _realname;
@@ -42,6 +66,9 @@
 		[_XMPPConnection addDelegate: self];
 		[_XMPPConnection asyncConnect];
 
+		_nicknamesInChannels = [[OFMutableDictionary alloc] init];
+		_joinedChannels = [[OFMutableSet alloc] init];
+
 		/*
 		 * Need to keep ourselves alive until the XMPP connection is
 		 * closed.
@@ -59,6 +86,8 @@
 {
 	[_socket release];
 	[_XMPPConnection release];
+	[_nicknamesInChannels release];
+	[_joinedChannels release];
 
 	[super dealloc];
 }
@@ -104,20 +133,55 @@
 {
 	XMPPJID *from = [presence from];
 
-	if ([[from domain] isEqual: MUC_HOST]) {
-		if ([[presence type] isEqual: @"unavailable"])
+	if ([[from domain] isEqual: MUC_HOST] && [from resource] != nil) {
+		if ([[presence type] isEqual: @"unavailable"]) {
+			[[_nicknamesInChannels objectForKey: [from node]]
+			    removeObject: [from resource]];
+
+			if ([[from resource] isEqual: _nickname])
+				[_joinedChannels removeObject: [from node]];
+
 			[self sendLine: @":%@ PART #%@",
 					[from resource], [from node]];
-		else if ([[presence type] isEqual: @"error"])
-			[self sendLine: @":%@ KICK #%@ %@ :XMPP error presence",
-					[from resource], [from node],
-					[from resource]];
-		/*
-		 * We always fake our own join, so ignore presence for ourself.
-		 */
-		else if (![[from resource] isEqual: _nickname])
-			[self sendLine: @":%@ JOIN #%@",
-					[from resource], [from node]];
+		} else if ([presence type] == nil) {
+			OFMutableSet OF_GENERIC(OFString *)
+			    *nicknamesInChannel;
+			bool sendList = false;
+
+			if ([[from resource] isEqual: _nickname]) {
+				[_joinedChannels addObject: [from node]];
+				sendList = true;
+			}
+
+			nicknamesInChannel = [_nicknamesInChannels
+			    objectForKey: [from node]];
+			if (nicknamesInChannel == nil) {
+				nicknamesInChannel = [OFMutableSet set];
+				[_nicknamesInChannels
+				    setObject: nicknamesInChannel
+				       forKey: [from node]];
+			}
+			[nicknamesInChannel addObject: [from resource]];
+
+			if ([_joinedChannels containsObject: [from node]])
+				[self sendLine: @":%@ JOIN #%@",
+						[from resource], [from node]];
+
+			if (sendList) {
+				OFString *channel = [[from node]
+				    stringByPrependingString: @"#"];
+				OFArray *arguments = [OFArray
+				    arrayWithObject: channel];
+
+				for (OFString *nickname in nicknamesInChannel)
+					[self sendLine:
+					    @":" IRC_HOST " 353 %@ = %@ :%@",
+					    _nickname, channel, nickname];
+
+				[self sendStatus: 366
+				       arguments: arguments];
+			}
+		}
 	}
 }
 
@@ -175,8 +239,7 @@
 
 		if ([components count] < 2) {
 			[self sendStatus: 431
-			       arguments: nil
-				 message: @"No nickname given"];
+			       arguments: nil];
 			return;
 		}
 
@@ -187,8 +250,7 @@
 
 		if ([nickname length] == 0) {
 			[self sendStatus: 431
-			       arguments: nil
-				 message: @"No nickname given"];
+			       arguments: nil];
 			return;
 		}
 
@@ -202,8 +264,7 @@
 
 		if ([components count] < 5) {
 			[self sendStatus: 461
-			       arguments: [OFArray arrayWithObject: @"USER"]
-				 message: @"Not enough parameters"];
+			       arguments: [OFArray arrayWithObject: @"USER"]];
 			return;
 		}
 
@@ -218,8 +279,7 @@
 
 		if ([realname length] == 0) {
 			[self sendStatus: 461
-			       arguments: [OFArray arrayWithObject: @"USER"]
-				 message: @"Not enough parameters"];
+			       arguments: [OFArray arrayWithObject: @"USER"]];
 			return;
 		}
 
@@ -229,8 +289,7 @@
 	} else if ([action isEqual: @"JOIN"]) {
 		if ([components count] < 2) {
 			[self sendStatus: 461
-			       arguments: [OFArray arrayWithObject: @"JOIN"]
-				 message: @"Not enough parameters"];
+			       arguments: [OFArray arrayWithObject: @"JOIN"]];
 			return;
 		}
 
@@ -240,8 +299,7 @@
 	} else if ([action isEqual: @"PART"]) {
 		if ([components count] < 2) {
 			[self sendStatus: 461
-			       arguments: [OFArray arrayWithObject: @"LEAVE"]
-				 message: @"Not enough parameters"];
+			       arguments: [OFArray arrayWithObject: @"LEAVE"]];
 			return;
 		}
 
@@ -255,15 +313,13 @@
 
 		if ([components count] < 2) {
 			[self sendStatus: 411
-			       arguments: nil
-				 message: @"No recipient given"];
+			       arguments: nil];
 			return;
 		}
 
 		if ([components count] < 3) {
 			[self sendStatus: 412
-			       arguments: nil
-				 message: @"No text to send"];
+			       arguments: nil];
 			return;
 		}
 
@@ -281,8 +337,7 @@
 			toChannel: channel];
 	} else
 		[self sendStatus: 421
-		       arguments: [OFArray arrayWithObject: action]
-			 message: @"Unknown command"];
+		       arguments: [OFArray arrayWithObject: action]];
 }
 
 - (void)sendLine: (OFConstantString *)format, ...
@@ -304,9 +359,9 @@
 
 - (void)sendStatus: (unsigned short)status
 	 arguments: (OFArray OF_GENERIC(OFString *) *)arguments
-	   message: (OFString *)message
 {
 	OFString *nickname = (_nickname != nil ? _nickname : @"*");
+	OFString *message = messageForStatus(status);
 
 	if (arguments == nil)
 		[self sendLine: @":" IRC_HOST @" %03d %@ :%@",
@@ -337,6 +392,7 @@
 			  type: (OFString *)type
 {
 	XMPPJID *JID;
+	OFXMLElement *history, *x;
 	XMPPPresence *presence;
 
 	channel = [channel substringWithRange:
@@ -347,9 +403,19 @@
 	JID.domain = MUC_HOST;
 	JID.resource = _nickname;
 
+	history = [OFXMLElement elementWithName: @"history"
+				      namespace: XMPP_NS_MUC];
+	[history addAttributeWithName: @"maxchars"
+			  stringValue: @"0"];
+
+	x = [OFXMLElement elementWithName: @"x"
+				namespace: XMPP_NS_MUC];
+	[x addChild: history];
+
 	presence = [XMPPPresence presence];
 	presence.to = JID;
 	presence.type = type;
+	[presence addChild: x];
 
 	[_XMPPConnection sendStanza: presence];
 }
@@ -358,34 +424,19 @@
 {
 	if (![channel hasPrefix: @"#"]) {
 		[self sendStatus: 403
-		       arguments: [OFArray arrayWithObject: channel]
-			 message: @"No such channel"];
+		       arguments: [OFArray arrayWithObject: channel]];
 		return;
 	}
 
 	[self sendPresenceForChannel: channel
 				type: nil];
-
-	/*
-	 * Immediately indicate to the client that the channel was joined -
-	 * even if we could not.
-	 *
-	 * If we cannot join the channel, we just kick the user.
-	 *
-	 * The reason for this is that it makes handling presences
-	 * significantly easier - we don't need to buffer all of them until we
-	 * get our own presence, and can immediately convert presences to join
-	 * messages.
-	 */
-	[self sendLine: @":%@ JOIN %@", _nickname, channel];
 }
 
 - (void)leaveChannel: (OFString *)channel
 {
 	if (![channel hasPrefix: @"#"]) {
 		[self sendStatus: 403
-		       arguments: [OFArray arrayWithObject: channel]
-			 message: @"No such channel"];
+		       arguments: [OFArray arrayWithObject: channel]];
 		return;
 	}
 
@@ -401,8 +452,7 @@
 
 	if (![channel hasPrefix: @"#"]) {
 		[self sendStatus: 401
-		       arguments: [OFArray arrayWithObject: channel]
-			 message: @"No such nick/channel"];
+		       arguments: [OFArray arrayWithObject: channel]];
 		return;
 	}
 
