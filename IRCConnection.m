@@ -1,3 +1,4 @@
+#include <assert.h>
 #include <stdarg.h>
 
 #import "IRCConnection.h"
@@ -29,6 +30,8 @@ messageForStatus(unsigned short status)
 		return @"No such nick/channel";
 	case 403:
 		return @"No such channel";
+	case 405:
+		return @"You have joined too many channels";
 	case 411:
 		return @"No recipient given";
 	case 412:
@@ -66,8 +69,7 @@ messageForStatus(unsigned short status)
 		[_XMPPConnection addDelegate: self];
 		[_XMPPConnection asyncConnect];
 
-		_nicknamesInChannels = [[OFMutableDictionary alloc] init];
-		_joinedChannels = [[OFMutableSet alloc] init];
+		_nicknamesInChannel = [[OFMutableSet alloc] init];
 
 		/*
 		 * Need to keep ourselves alive until the XMPP connection is
@@ -86,8 +88,8 @@ messageForStatus(unsigned short status)
 {
 	[_socket release];
 	[_XMPPConnection release];
-	[_nicknamesInChannels release];
-	[_joinedChannels release];
+	[_joinedChannel release];
+	[_nicknamesInChannel release];
 
 	[super dealloc];
 }
@@ -132,55 +134,51 @@ messageForStatus(unsigned short status)
   didReceivePresence: (XMPPPresence *)presence
 {
 	XMPPJID *from = [presence from];
+	OFString *fromNode = [from node];
+	OFString *fromResource = [from resource];
+	OFString *presenceType = [presence type];
 
-	if ([[from domain] isEqual: MUC_HOST] && [from resource] != nil) {
-		if ([[presence type] isEqual: @"unavailable"]) {
-			[[_nicknamesInChannels objectForKey: [from node]]
-			    removeObject: [from resource]];
+	/* We only care about MUC presences */
+	if (![[from domain] isEqual: MUC_HOST] || fromResource == nil)
+		return;
 
-			if ([[from resource] isEqual: _nickname])
-				[_joinedChannels removeObject: [from node]];
+	if (_joinedChannel != nil && [presenceType isEqual: @"unavailable"]) {
+		[_nicknamesInChannel removeObject: fromResource];
 
-			[self sendLine: @":%@ PART #%@",
-					[from resource], [from node]];
-		} else if ([presence type] == nil) {
-			OFMutableSet OF_GENERIC(OFString *)
-			    *nicknamesInChannel;
-			bool sendList = false;
+		if ([fromResource isEqual: _nickname]) {
+			[_joinedChannel release];
+			_joinedChannel = nil;
 
-			if ([[from resource] isEqual: _nickname]) {
-				[_joinedChannels addObject: [from node]];
-				sendList = true;
-			}
+			[_nicknamesInChannel removeAllObjects];
+		}
 
-			nicknamesInChannel = [_nicknamesInChannels
-			    objectForKey: [from node]];
-			if (nicknamesInChannel == nil) {
-				nicknamesInChannel = [OFMutableSet set];
-				[_nicknamesInChannels
-				    setObject: nicknamesInChannel
-				       forKey: [from node]];
-			}
-			[nicknamesInChannel addObject: [from resource]];
+		[self sendLine: @":%@ PART #%@", fromResource, fromNode];
+	} else if (presenceType == nil) {
+		bool sendList = false;
 
-			if ([_joinedChannels containsObject: [from node]])
-				[self sendLine: @":%@ JOIN #%@",
-						[from resource], [from node]];
+		if ([fromResource isEqual: _nickname]) {
+			assert(_joinedChannel == nil);
 
-			if (sendList) {
-				OFString *channel = [[from node]
-				    stringByPrependingString: @"#"];
-				OFArray *arguments = [OFArray
-				    arrayWithObject: channel];
+			_joinedChannel = [fromNode copy];
+			sendList = true;
+		}
 
-				for (OFString *nickname in nicknamesInChannel)
-					[self sendLine:
-					    @":" IRC_HOST " 353 %@ = %@ :%@",
-					    _nickname, channel, nickname];
+		[_nicknamesInChannel addObject: fromResource];
 
-				[self sendStatus: 366
-				       arguments: arguments];
-			}
+		[self sendLine: @":%@ JOIN #%@", fromResource, fromNode];
+
+		if (sendList) {
+			OFString *channel = [fromNode
+			    stringByPrependingString: @"#"];
+			OFArray *arguments = [OFArray arrayWithObject: channel];
+
+			for (OFString *nickname in _nicknamesInChannel)
+				[self sendLine:
+				    @":" IRC_HOST " 353 %@ = %@ :%@",
+				    _nickname, channel, nickname];
+
+			[self sendStatus: 366
+			       arguments: arguments];
 		}
 	}
 }
@@ -189,16 +187,23 @@ messageForStatus(unsigned short status)
   didReceiveMessage: (XMPPMessage *)message
 {
 	XMPPJID *from = [message from];
+	OFString *fromNode = [from node];
+	OFString *fromResource = [from resource];
 	OFString *body = [message body];
 
-	if ([[message type] isEqual: @"groupchat"] &&
-	    [[from domain] isEqual: MUC_HOST] &&
-	    ![[from resource] isEqual: _nickname]) {
-		for (OFString *line in
-		    [body componentsSeparatedByString: @"\n"])
-			[self sendLine: @":%@ PRIVMSG #%@ :%@",
-					[from resource], [from node], line];
-	}
+	/*
+	 * We only care about MUC messages from the room we joined that are not
+	 * self-messages.
+	 */
+	if (![[from domain] isEqual: MUC_HOST] ||
+	    ![fromNode isEqual: _joinedChannel] ||
+	    [fromResource isEqual: _nickname] ||
+	    ![[message type] isEqual: @"groupchat"])
+		return;
+
+	for (OFString *line in [body componentsSeparatedByString: @"\n"])
+		[self sendLine: @":%@ PRIVMSG #%@ :%@",
+				fromResource, fromNode, line];
 }
 
 - (bool)socket: (OF_KINDOF(OFTCPSocket *))sock
@@ -293,9 +298,24 @@ messageForStatus(unsigned short status)
 			return;
 		}
 
-		for (OFString *channel in [[components objectAtIndex: 1]
-		    componentsSeparatedByString: @","])
-			[self joinChannel: channel];
+		if (_joinedChannel != nil) {
+			[self sendStatus: 405
+			       arguments: [components objectsInRange:
+					      of_range(1, 1)]];
+			[self sendLine:
+			    @":" IRC_HOST @" NOTICE %@ :You can only join one "
+			    @"channel per connection.", _nickname];
+			[self sendLine:
+			    @":" IRC_HOST @" NOTICE %@ :Please create a new "
+			    @"connection to join another channel.", _nickname];
+			[self sendLine:
+			    @":" IRC_HOST @" NOTICE %@ :This is necessary as "
+			    @"different MUCs can have different users with the "
+			    @"same nickname.", _nickname];
+			return;
+		}
+
+		[self joinChannel: [components objectAtIndex: 1]];
 	} else if ([action isEqual: @"PART"]) {
 		if ([components count] < 2) {
 			[self sendStatus: 461
@@ -303,9 +323,7 @@ messageForStatus(unsigned short status)
 			return;
 		}
 
-		for (OFString *channel in [[components objectAtIndex: 1]
-		    componentsSeparatedByString: @","])
-			[self leaveChannel: channel];
+		[self leaveChannel: [components objectAtIndex: 1]];
 	} else if ([action isEqual: @"PRIVMSG"]) {
 		OFString *channel;
 		size_t messagePos;

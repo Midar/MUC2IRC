@@ -12,9 +12,8 @@ OF_ASSUME_NONNULL_BEGIN
 	OFString *_Nullable _nickname, *_Nullable _username;
 	OFString *_Nullable _realname;
 	bool _connected;
-	OFMutableDictionary OF_GENERIC(OFString *,
-	    OFMutableSet OF_GENERIC(OFString *) *) *_nicknamesInChannels;
-	OFMutableSet OF_GENERIC(OFString *) *_joinedChannels;
+	OFString *_Nullable _joinedChannel;
+	OFMutableSet OF_GENERIC(OFString *) *_nicknamesInChannel;
 }
 
 @property OF_NULLABLE_PROPERTY (copy, nonatomic) OFString *nickname, *username;
