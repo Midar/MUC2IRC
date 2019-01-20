@@ -4,11 +4,7 @@
 #import "IRCConnection.h"
 #import "config.h"
 
-@interface IRCConnection ()
-- (bool)socket: (OF_KINDOF(OFTCPSocket *))sock
-   didReadLine: (OFString *)line
-       context: (id)context
-     exception: (id)exception;
+@interface IRCConnection () <OFStreamDelegate>
 - (void)processLine: (OFString *)line;
 - (void)sendLine: (OFConstantString *)format, ...;
 - (void)sendStatus: (unsigned short)status
@@ -76,6 +72,8 @@ messageForStatus(unsigned short status)
 		 * closed.
 		 */
 		[self retain];
+
+		[_socket setDelegate: self];
 	} @catch (id e) {
 		[self release];
 		@throw e;
@@ -124,10 +122,7 @@ messageForStatus(unsigned short status)
 	of_log(@"XMPP connection for %@ has JID %@",
 	    of_socket_address_ip_string([_socket remoteAddress], NULL), JID);
 
-	[_socket asyncReadLineWithTarget: self
-				selector: @selector(socket:didReadLine:context:
-					      exception:)
-				 context: nil];
+	[_socket asyncReadLine];
 }
 
 -   (void)connection: (XMPPConnection *)connection
@@ -206,20 +201,19 @@ messageForStatus(unsigned short status)
 				fromResource, fromNode, line];
 }
 
-- (bool)socket: (OF_KINDOF(OFTCPSocket *))sock
+- (bool)stream: (OF_KINDOF(OFStream *))stream
    didReadLine: (OFString *)line
-       context: (id)context
      exception: (id)exception
 {
 	if (exception != nil) {
 		of_log(@"Exception in connection from %@",
-		    of_socket_address_ip_string([sock remoteAddress], NULL));
+		    of_socket_address_ip_string([stream remoteAddress], NULL));
 		return false;
 	}
 
 	if (line == nil) {
 		of_log(@"Connection from %@ closed",
-		    of_socket_address_ip_string([sock remoteAddress], NULL));
+		    of_socket_address_ip_string([stream remoteAddress], NULL));
 
 		[_XMPPConnection close];
 		return false;

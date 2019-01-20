@@ -1,6 +1,6 @@
 all:
-	@objfw-compile -lobjxmpp -o muc2irc	\
-		IRCConnection.m			\
+	@objfw-compile --package ObjXMPP -o muc2irc	\
+		IRCConnection.m				\
 		MUC2IRC.m
 
 clean:

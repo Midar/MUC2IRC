@@ -2,15 +2,10 @@
 
 #import "IRCConnection.h"
 
-@interface MUC2IRC: OFObject <OFApplicationDelegate>
+@interface MUC2IRC: OFObject <OFApplicationDelegate, OFTCPSocketDelegate>
 {
 	OFTCPSocket *_listeningSocket;
 }
-
--    (bool)socket: (OF_KINDOF(OFTCPSocket *))listeningSocket
-  didAcceptSocket: (OF_KINDOF(OFTCPSocket *))sock
-	  context: (id)context
-	exception: (id)exception;
 @end
 
 OF_APPLICATION_DELEGATE(MUC2IRC)
@@ -19,19 +14,15 @@ OF_APPLICATION_DELEGATE(MUC2IRC)
 - (void)applicationDidFinishLaunching
 {
 	_listeningSocket = [[OFTCPSocket alloc] init];
+	[_listeningSocket setDelegate: self];
 	[_listeningSocket bindToHost: @"::"
 				port: 6667];
 	[_listeningSocket listen];
-	[_listeningSocket asyncAcceptWithTarget: self
-				       selector: @selector(socket:
-						     didAcceptSocket:context:
-						     exception:)
-					context: nil];
+	[_listeningSocket asyncAccept];
 }
 
 -    (bool)socket: (OF_KINDOF(OFTCPSocket *))listeningSocket
   didAcceptSocket: (OF_KINDOF(OFTCPSocket *))sock
-	  context: (id)context
 	exception: (id)exception;
 {
 	if (exception != nil) {
