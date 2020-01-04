@@ -31,7 +31,9 @@
 	 arguments: (OFArray OF_GENERIC(OFString *) *)arguments;
 - (void)checkHelloComplete;
 - (void)sendPresenceForChannel: (OFString *)channel
-			  type: (OFString *)type;
+		      nickname: (OFString *)nickname
+			  type: (OFString *)type
+	       includeXHistory: (bool)includeXHistory;
 - (void)joinChannel: (OFString *)channel;
 - (void)leaveChannel: (OFString *)channel;
 @end
@@ -199,7 +201,8 @@ messageForStatus(unsigned short status)
 		if ([fromResource isEqual: _nickname]) {
 			assert(_joinedChannel == nil);
 
-			_joinedChannel = [fromNode copy];
+			_joinedChannel =
+			    [[fromNode stringByPrependingString: @"#"] copy];
 			sendList = true;
 		}
 
@@ -310,6 +313,14 @@ messageForStatus(unsigned short status)
 			return;
 		}
 
+		if (_joinedChannel != nil) {
+			[self sendPresenceForChannel: _joinedChannel
+					    nickname: nickname
+						type: nil
+				     includeXHistory: false];
+			return;
+		}
+
 		self.nickname = nickname;
 		[self checkHelloComplete];
 	} else if ([action isEqual: @"USER"]) {
@@ -370,7 +381,7 @@ messageForStatus(unsigned short status)
 	} else if ([action isEqual: @"PART"]) {
 		if (components.count < 2) {
 			[self sendStatus: 461
-			       arguments: [OFArray arrayWithObject: @"LEAVE"]];
+			       arguments: [OFArray arrayWithObject: @"PART"]];
 			return;
 		}
 
@@ -445,23 +456,25 @@ messageForStatus(unsigned short status)
 
 - (void)checkHelloComplete
 {
-	if (_connected)
+	if (_handshakeDone)
 		return;
 
 	if (_nickname == nil || _username == nil || _realname == nil)
 		return;
 
-	_connected = true;
+	_handshakeDone = true;
 
 	[self sendLine: @":" IRC_HOST @" 001 %@ :Welcome to MUC2IRC!",
 			_nickname];
 }
 
 - (void)sendPresenceForChannel: (OFString *)channel
+		      nickname: (OFString *)nickname
 			  type: (OFString *)type
+	       includeXHistory: (bool)includeXHistory
 {
 	XMPPJID *JID;
-	OFXMLElement *history, *x;
+	OFXMLElement *x;
 	XMPPPresence *presence;
 
 	channel = [channel substringWithRange:
@@ -470,16 +483,19 @@ messageForStatus(unsigned short status)
 	JID = [XMPPJID JID];
 	JID.node = channel;
 	JID.domain = MUC_HOST;
-	JID.resource = _nickname;
-
-	history = [OFXMLElement elementWithName: @"history"
-				      namespace: XMPP_NS_MUC];
-	[history addAttributeWithName: @"maxchars"
-			  stringValue: @"0"];
+	JID.resource = nickname;
 
 	x = [OFXMLElement elementWithName: @"x"
 				namespace: XMPP_NS_MUC];
-	[x addChild: history];
+
+	if (includeXHistory) {
+		OFXMLElement *history = [OFXMLElement
+		    elementWithName: @"history"
+			  namespace: XMPP_NS_MUC];
+		[history addAttributeWithName: @"maxchars"
+				  stringValue: @"0"];
+		[x addChild: history];
+	}
 
 	presence = [XMPPPresence presence];
 	presence.to = JID;
@@ -498,7 +514,9 @@ messageForStatus(unsigned short status)
 	}
 
 	[self sendPresenceForChannel: channel
-				type: nil];
+			    nickname: _nickname
+				type: nil
+		     includeXHistory: true];
 }
 
 - (void)leaveChannel: (OFString *)channel
@@ -510,7 +528,9 @@ messageForStatus(unsigned short status)
 	}
 
 	[self sendPresenceForChannel: channel
-				type: @"unavailable"];
+			    nickname: _nickname
+				type: @"unavailable"
+		     includeXHistory: false];
 }
 
 - (void)sendMessage: (OFString *)message

@@ -31,7 +31,7 @@ OF_ASSUME_NONNULL_BEGIN
 	XMPPConnection *_XMPPConnection;
 	OFString *_Nullable _nickname, *_Nullable _username;
 	OFString *_Nullable _realname;
-	bool _connected;
+	bool _handshakeDone;
 	OFString *_Nullable _joinedChannel;
 	OFMutableSet OF_GENERIC(OFString *) *_nicknamesInChannel;
 }
