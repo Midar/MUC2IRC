@@ -56,8 +56,12 @@ messageForStatus(unsigned short status)
 		return @"Unknown command";
 	case 431:
 		return @"No nickname given";
+	case 433:
+		return @"Nickname is already in use";
 	case 461:
 		return @"Not enough parameters";
+	case 474:
+		return @"Cannot join channel (+b)";
 	default:
 		return nil;
 	}
@@ -155,6 +159,27 @@ messageForStatus(unsigned short status)
 	/* We only care about MUC presences */
 	if (![from.domain isEqual: MUC_HOST] || fromResource == nil)
 		return;
+
+	if ([presenceType isEqual: @"error"] &&
+	    [fromResource isEqual: _nickname]) {
+		OFXMLElement *error = [presence elementForName: @"error"
+						     namespace: XMPP_NS_CLIENT];
+		OFString *channel = [fromNode stringByPrependingString: @"#"];
+
+		if ([error elementForName: @"conflict"
+				namespace: XMPP_NS_STANZAS] != nil)
+			[self sendStatus: 433
+			       arguments: [OFArray arrayWithObject: _nickname]];
+		else
+			[self sendLine: @":" IRC_HOST @" NOTICE %@ :Unknown "
+					@"error joining %@.",
+					_nickname, fromNode];
+
+		[self sendStatus: 474
+		       arguments: [OFArray arrayWithObject: channel]];
+
+		return;
+	}
 
 	if (_joinedChannel != nil && [presenceType isEqual: @"unavailable"]) {
 		[_nicknamesInChannel removeObject: fromResource];
