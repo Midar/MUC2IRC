@@ -166,7 +166,8 @@ messageForStatus(unsigned short status)
 			[_nicknamesInChannel removeAllObjects];
 		}
 
-		[self sendLine: @":%@ PART #%@", fromResource, fromNode];
+		[self sendLine: @":%@!%@@%@ PART #%@",
+				fromResource, fromNode, from.domain, fromNode];
 	} else if (presenceType == nil) {
 		bool sendList = false;
 
@@ -179,7 +180,8 @@ messageForStatus(unsigned short status)
 
 		[_nicknamesInChannel addObject: fromResource];
 
-		[self sendLine: @":%@ JOIN #%@", fromResource, fromNode];
+		[self sendLine: @":%@!%@@%@ JOIN #%@",
+				fromResource, fromNode, from.domain, fromNode];
 
 		if (sendList) {
 			OFString *channel = [fromNode
@@ -216,8 +218,17 @@ messageForStatus(unsigned short status)
 		return;
 
 	for (OFString *line in [body componentsSeparatedByString: @"\n"])
-		[self sendLine: @":%@ PRIVMSG #%@ :%@",
-				fromResource, fromNode, line];
+		[self sendLine: @":%@!%@@%@ PRIVMSG #%@ :%@",
+				fromResource, fromNode, from.domain, fromNode,
+				line];
+}
+
+-  (void)connection: (XMPPConnection *)connection
+  didThrowException: (id)exception
+{
+	of_log(@"XMPP connection for %@ threw exception: %@",
+	    of_socket_address_ip_string(_socket.remoteAddress, NULL),
+	    exception);
 }
 
 - (bool)stream: (OFStream *)stream
