@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2019 Jonathan Schleifer <js@heap.zone>
+ * Copyright (c) 2018, 2019, 2020 Jonathan Schleifer <js@nil.im>
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -25,9 +25,9 @@ OF_ASSUME_NONNULL_BEGIN
 
 @class XMPPConnection;
 
-@interface IRCConnection: OFObject <XMPPConnectionDelegate>
+@interface IRCConnection: OFObject
 {
-	OF_KINDOF(OFTCPSocket *) _socket;
+	OFTCPSocket *_socket;
 	XMPPConnection *_XMPPConnection;
 	OFString *_Nullable _nickname, *_Nullable _username;
 	OFString *_Nullable _realname;
@@ -39,9 +39,8 @@ OF_ASSUME_NONNULL_BEGIN
 @property OF_NULLABLE_PROPERTY (copy, nonatomic) OFString *nickname, *username;
 @property OF_NULLABLE_PROPERTY (copy, nonatomic) OFString *realname;
 
-+ (instancetype)connectionWithSocket: (OF_KINDOF(OFTCPSocket *))sock;
-- (instancetype)initWithSocket: (OF_KINDOF(OFTCPSocket *))sock
-    OF_DESIGNATED_INITIALIZER;
++ (instancetype)connectionWithSocket: (OFTCPSocket *)sock;
+- (instancetype)initWithSocket: (OFTCPSocket *)sock OF_DESIGNATED_INITIALIZER;
 @end
 
 OF_ASSUME_NONNULL_END

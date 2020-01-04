@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2019 Jonathan Schleifer <js@heap.zone>
+ * Copyright (c) 2018, 2019, 2020 Jonathan Schleifer <js@nil.im>
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -34,15 +34,15 @@ OF_APPLICATION_DELEGATE(MUC2IRC)
 - (void)applicationDidFinishLaunching
 {
 	_listeningSocket = [[OFTCPSocket alloc] init];
-	[_listeningSocket setDelegate: self];
 	[_listeningSocket bindToHost: @"::"
 				port: 6667];
 	[_listeningSocket listen];
+	_listeningSocket.delegate = self;
 	[_listeningSocket asyncAccept];
 }
 
--    (bool)socket: (OF_KINDOF(OFTCPSocket *))listeningSocket
-  didAcceptSocket: (OF_KINDOF(OFTCPSocket *))sock
+-    (bool)socket: (OFTCPSocket *)listeningSocket
+  didAcceptSocket: (OFTCPSocket *)sock
 	exception: (id)exception;
 {
 	if (exception != nil) {
@@ -51,7 +51,7 @@ OF_APPLICATION_DELEGATE(MUC2IRC)
 	}
 
 	of_log(@"Accepted connection from %@",
-	    of_socket_address_ip_string([sock remoteAddress], NULL));
+	    of_socket_address_ip_string(sock.remoteAddress, NULL));
 
 	[IRCConnection connectionWithSocket: sock];
 

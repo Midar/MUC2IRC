@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2019 Jonathan Schleifer <js@heap.zone>
+ * Copyright (c) 2018, 2019, 2020 Jonathan Schleifer <js@nil.im>
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -24,7 +24,7 @@
 #import "IRCConnection.h"
 #import "config.h"
 
-@interface IRCConnection () <OFStreamDelegate>
+@interface IRCConnection () <OFTCPSocketDelegate, XMPPConnectionDelegate>
 - (void)processLine: (OFString *)line;
 - (void)sendLine: (OFConstantString *)format, ...;
 - (void)sendStatus: (unsigned short)status
@@ -66,22 +66,23 @@ messageForStatus(unsigned short status)
 @implementation IRCConnection
 @synthesize nickname = _nickname, username = _username, realname = _realname;
 
-+ (instancetype)connectionWithSocket: (OF_KINDOF(OFTCPSocket *))sock
++ (instancetype)connectionWithSocket: (OFTCPSocket *)sock
 {
 	return [[[self alloc] initWithSocket: sock] autorelease];
 }
 
-- (instancetype)initWithSocket: (OF_KINDOF(OFTCPSocket *))sock
+- (instancetype)initWithSocket: (OFTCPSocket *)sock
 {
 	self = [super init];
 
 	@try {
 		_socket = [sock retain];
+		_socket.delegate = self;
 
 		_XMPPConnection = [[XMPPConnection alloc] init];
-		[_XMPPConnection setDomain: XMPP_HOST];
-		[_XMPPConnection setResource: XMPP_RESOURCE];
-		[_XMPPConnection setUsesAnonymousAuthentication: true];
+		_XMPPConnection.domain = XMPP_HOST;
+		_XMPPConnection.resource = XMPP_RESOURCE;
+		_XMPPConnection.usesAnonymousAuthentication = true;
 		[_XMPPConnection addDelegate: self];
 		[_XMPPConnection asyncConnect];
 
@@ -92,8 +93,6 @@ messageForStatus(unsigned short status)
 		 * closed.
 		 */
 		[self retain];
-
-		[_socket setDelegate: self];
 	} @catch (id e) {
 		[self release];
 		@throw e;
@@ -131,7 +130,7 @@ messageForStatus(unsigned short status)
 - (void)connectionWasClosed: (XMPPConnection *)connection
 {
 	of_log(@"XMPP connection for %@ was closed",
-	    of_socket_address_ip_string([_socket remoteAddress], NULL));
+	    of_socket_address_ip_string(_socket.remoteAddress, NULL));
 
 	[self release];
 }
@@ -140,7 +139,7 @@ messageForStatus(unsigned short status)
      wasBoundToJID: (XMPPJID *)JID
 {
 	of_log(@"XMPP connection for %@ has JID %@",
-	    of_socket_address_ip_string([_socket remoteAddress], NULL), JID);
+	    of_socket_address_ip_string(_socket.remoteAddress, NULL), JID);
 
 	[_socket asyncReadLine];
 }
@@ -148,13 +147,13 @@ messageForStatus(unsigned short status)
 -   (void)connection: (XMPPConnection *)connection
   didReceivePresence: (XMPPPresence *)presence
 {
-	XMPPJID *from = [presence from];
-	OFString *fromNode = [from node];
-	OFString *fromResource = [from resource];
-	OFString *presenceType = [presence type];
+	XMPPJID *from = presence.from;
+	OFString *fromNode = from.node;
+	OFString *fromResource = from.resource;
+	OFString *presenceType = presence.type;
 
 	/* We only care about MUC presences */
-	if (![[from domain] isEqual: MUC_HOST] || fromResource == nil)
+	if (![from.domain isEqual: MUC_HOST] || fromResource == nil)
 		return;
 
 	if (_joinedChannel != nil && [presenceType isEqual: @"unavailable"]) {
@@ -201,19 +200,19 @@ messageForStatus(unsigned short status)
 -  (void)connection: (XMPPConnection *)connection
   didReceiveMessage: (XMPPMessage *)message
 {
-	XMPPJID *from = [message from];
-	OFString *fromNode = [from node];
-	OFString *fromResource = [from resource];
-	OFString *body = [message body];
+	XMPPJID *from = message.from;
+	OFString *fromNode = from.node;
+	OFString *fromResource = from.resource;
+	OFString *body = message.body;
 
 	/*
 	 * We only care about MUC messages from the room we joined that are not
 	 * self-messages.
 	 */
-	if (![[from domain] isEqual: MUC_HOST] ||
+	if (![from.domain isEqual: MUC_HOST] ||
 	    ![fromNode isEqual: _joinedChannel] ||
 	    [fromResource isEqual: _nickname] ||
-	    ![[message type] isEqual: @"groupchat"])
+	    ![message.type isEqual: @"groupchat"])
 		return;
 
 	for (OFString *line in [body componentsSeparatedByString: @"\n"])
@@ -221,19 +220,21 @@ messageForStatus(unsigned short status)
 				fromResource, fromNode, line];
 }
 
-- (bool)stream: (OF_KINDOF(OFStream *))stream
+- (bool)stream: (OFStream *)stream
    didReadLine: (OFString *)line
      exception: (id)exception
 {
+	OFTCPSocket *sock = (OFTCPSocket *)stream;
+
 	if (exception != nil) {
 		of_log(@"Exception in connection from %@",
-		    of_socket_address_ip_string([stream remoteAddress], NULL));
+		    of_socket_address_ip_string(sock.remoteAddress, NULL));
 		return false;
 	}
 
 	if (line == nil) {
 		of_log(@"Connection from %@ closed",
-		    of_socket_address_ip_string([stream remoteAddress], NULL));
+		    of_socket_address_ip_string(sock.remoteAddress, NULL));
 
 		[_XMPPConnection close];
 		return false;
@@ -251,12 +252,12 @@ messageForStatus(unsigned short status)
 	OFString *action = [[components objectAtIndex: 0] uppercaseString];
 
 	of_log(@"[%@] > %@",
-	    of_socket_address_ip_string([_socket remoteAddress], NULL), line);
+	    of_socket_address_ip_string(_socket.remoteAddress, NULL), line);
 
 	if ([action isEqual: @"NICK"]) {
 		OFString *nickname;
 
-		if ([components count] < 2) {
+		if (components.count < 2) {
 			[self sendStatus: 431
 			       arguments: nil];
 			return;
@@ -265,7 +266,7 @@ messageForStatus(unsigned short status)
 		nickname = [components objectAtIndex: 1];
 		if ([nickname hasPrefix: @":"])
 			nickname = [nickname substringWithRange:
-			    of_range(1, [nickname length] - 1)];
+			    of_range(1, nickname.length - 1)];
 
 		if ([nickname length] == 0) {
 			[self sendStatus: 431
@@ -273,7 +274,7 @@ messageForStatus(unsigned short status)
 			return;
 		}
 
-		[self setNickname: nickname];
+		self.nickname = nickname;
 		[self checkHelloComplete];
 	} else if ([action isEqual: @"USER"]) {
 		OFString *username;
@@ -281,7 +282,7 @@ messageForStatus(unsigned short status)
 		OFString *servername;
 		OFString *realname;
 
-		if ([components count] < 5) {
+		if (components.count < 5) {
 			[self sendStatus: 461
 			       arguments: [OFArray arrayWithObject: @"USER"]];
 			return;
@@ -294,7 +295,7 @@ messageForStatus(unsigned short status)
 
 		if ([realname hasPrefix: @":"])
 			realname = [realname substringWithRange:
-			    of_range(1, [realname length] - 1)];
+			    of_range(1, realname.length - 1)];
 
 		if ([realname length] == 0) {
 			[self sendStatus: 461
@@ -302,8 +303,8 @@ messageForStatus(unsigned short status)
 			return;
 		}
 
-		[self setUsername: username];
-		[self setRealname: realname];
+		self.username = username;
+		self.realname = realname;
 		[self checkHelloComplete];
 	} else if ([action isEqual: @"JOIN"]) {
 		if ([components count] < 2) {
@@ -331,7 +332,7 @@ messageForStatus(unsigned short status)
 
 		[self joinChannel: [components objectAtIndex: 1]];
 	} else if ([action isEqual: @"PART"]) {
-		if ([components count] < 2) {
+		if (components.count < 2) {
 			[self sendStatus: 461
 			       arguments: [OFArray arrayWithObject: @"LEAVE"]];
 			return;
@@ -343,13 +344,13 @@ messageForStatus(unsigned short status)
 		size_t messagePos;
 		OFString *message;
 
-		if ([components count] < 2) {
+		if (components.count < 2) {
 			[self sendStatus: 411
 			       arguments: nil];
 			return;
 		}
 
-		if ([components count] < 3) {
+		if (components.count < 3) {
 			[self sendStatus: 412
 			       arguments: nil];
 			return;
@@ -357,13 +358,13 @@ messageForStatus(unsigned short status)
 
 		channel = [components objectAtIndex: 1];
 
-		messagePos = [action length] + [channel length] + 2;
+		messagePos = action.length + channel.length + 2;
 		message = [line substringWithRange:
-		    of_range(messagePos, [line length] - messagePos)];
+		    of_range(messagePos, line.length - messagePos)];
 
 		if ([message hasPrefix: @":"])
 			message = [message substringWithRange:
-			    of_range(1, [message length] - 1)];
+			    of_range(1, message.length - 1)];
 
 		[self sendMessage: message
 			toChannel: channel];
@@ -378,7 +379,7 @@ messageForStatus(unsigned short status)
 	va_start(arguments, format);
 
 	of_log(@"[%@] < %@",
-	    of_socket_address_ip_string([_socket remoteAddress], NULL),
+	    of_socket_address_ip_string(_socket.remoteAddress, NULL),
 	    [[[OFString alloc] initWithFormat: format
 				    arguments: arguments] autorelease]);
 
@@ -428,7 +429,7 @@ messageForStatus(unsigned short status)
 	XMPPPresence *presence;
 
 	channel = [channel substringWithRange:
-	    of_range(1, [channel length] - 1)];
+	    of_range(1, channel.length - 1)];
 
 	JID = [XMPPJID JID];
 	JID.node = channel;
@@ -488,8 +489,7 @@ messageForStatus(unsigned short status)
 		return;
 	}
 
-	channel = [channel substringWithRange:
-	    of_range(1, [channel length] - 1)];
+	channel = [channel substringWithRange: of_range(1, channel.length - 1)];
 
 	JID = [XMPPJID JID];
 	JID.domain = MUC_HOST;
